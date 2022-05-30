@@ -1,0 +1,150 @@
+---
+title: "Galton data base editiuon"
+author: "Peng Hao"
+date: '`R Sys.Date`'
+output: html_document
+---
+
+```{r main, results='hide'}
+library(HistData)
+library(tidyverse)
+library(fastDummies)
+library(glmnet)
+source("~/R/EM_for_LMM.R")
+
+# Build the design matrix
+
+df <- GaltonFamilies
+
+## Index
+
+df <- df %>% mutate(index = match(df$family, unique(df$family)))
+
+## CV sample
+
+cv_size <- 5
+sa <- sample(1 : cv_size, length(df$family), replace = TRUE)
+
+
+h_ridge_mse<- h_gp <- h_lmm <- gp_mse <- mean_mse <- lmm_mse <- rep(0, cv_size)
+
+for (cv in 1 : cv_size) {
+  
+  ## Combine parents and training children
+  
+  famo <- df %>% select(index, father, mother) %>% pivot_longer(cols = -index, names_to = "identity", values_to = "height") %>% unique() %>% mutate(gender = ifelse(identity == "father", "male", "female")) # 保留父母信息
+  
+  train <- df[- which(sa == cv), ] # 选择孩子训练集
+  test <- df[which(sa == cv), ] # 选择孩子测试集
+  
+  family <- rbind(famo , train %>% select(index, identity = childNum, height = childHeight, gender)) %>% arrange(index) # 父母身高与训练集孩子身高合并
+  
+  ## Remove gender differences
+  
+  gender_diff <- family %>% group_by(gender) %>% summarise(m = mean(height))
+  gender_diff <- gender_diff$m[which(gender_diff$gender == "male")] - gender_diff$m[which(gender_diff$gender == "female")]
+  
+  family$height[family$gender == "male"] <- family$height[family$gender == "male"] - gender_diff
+  test$childHeight[test$gender == "male"] <- test$childHeight[test$gender == "male"] - gender_diff
+  
+  ###### Family average
+  
+  family_mean <- family %>% group_by(index) %>% summarise(predict = mean(height))
+  
+  mean_mse[cv] <- test %>% select(height = childHeight, index = index) %>% left_join(family_mean, by = "index") %>% mutate(diff = (height - predict)^2) %>% .$diff %>% mean()
+  
+  ######
+  
+  ## Design matrix
+  
+  x <- dummy_cols(family$index) %>% select(-1) %>% as.matrix()
+  
+  ###### High dimensional ridge
+  
+  h_ridge_fit <- cv.glmnet(x, family$height, alpha = 0)
+  
+  h_ridge_predict <- coef(h_ridge_fit, s = "lambda.min")
+  
+  h_ridge_result <- h_ridge_predict[1] + h_ridge_predict[-1] 
+  h_ridge_result <-  data.frame(index = 1:205, predict = h_ridge_result)
+  
+  h_ridge_mse[cv] <- test %>% select(height = childHeight, index = index) %>% left_join(h_ridge_result, by = "index") %>% mutate(diff = (height - predict)^2) %>% .$diff %>% mean()
+  
+  ######  
+  
+}
+```
+
+
+
+
+```{python other_algorithms, results='hide'}
+# basis
+import pandas as pd
+import numpy as np
+# algorithms
+from sklearn import linear_model
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn import svm
+# cv
+from sklearn.model_selection import cross_validate
+
+#########################
+
+df = r["df"]
+
+df.gender = df.gender.replace({"male" : 1, "female" : 0}).astype(float)
+x = np.stack((df.midparentHeight.values, df.gender.values), axis = 1)
+
+# x = df.midparentHeight.values
+# x = x.reshape(len(x), 1)#转换为矩阵
+
+y = df.childHeight.values
+
+cv_size = 5
+
+## OLS
+ols = linear_model.LinearRegression(fit_intercept=True)
+scores_ols = cross_validate(ols, x, y, cv=cv_size, \
+scoring='neg_mean_squared_error')
+ols_mse = scores_ols['test_score']
+
+## Ridge
+ridge = linear_model.RidgeCV(cv=5, fit_intercept=True)
+scores_ridge = cross_validate(ridge, x, y, cv=cv_size, \
+scoring= 'neg_mean_squared_error' )
+ridge_mse = scores_ridge['test_score']
+
+## Lasso
+lasso = linear_model.LassoCV(cv=5, fit_intercept=True)
+scores_lasso = cross_validate(lasso, x, y, cv=cv_size, \
+scoring= 'neg_mean_squared_error' )
+lasso_mse = scores_lasso['test_score']
+
+## DT max_leaf_nodes = 5
+dt = DecisionTreeRegressor(max_leaf_nodes = 5)
+scores_dt = cross_validate(dt, x, y, cv=cv_size, \
+scoring= 'neg_mean_squared_error' )
+dt_mse = scores_dt['test_score']
+
+## RF with max_leaf_nodes = 5
+rf = RandomForestRegressor(max_leaf_nodes = 5)
+scores_rf = cross_validate(rf, x, y, cv=cv_size, \
+scoring= 'neg_mean_squared_error' )
+rf_mse = scores_rf['test_score']
+
+## SVM with linear kernel
+svm = svm.SVR(kernel = "linear")
+scores_svm = cross_validate(svm, x, y, cv=cv_size, \
+scoring= 'neg_mean_squared_error' )
+svm_mse = scores_svm['test_score']
+
+## Conclusion
+df_mse = pd.DataFrame(\
+np.vstack((ols_mse, ridge_mse, lasso_mse, dt_mse, rf_mse, svm_mse)).T,\
+columns=["OLS", "Ridge", "Lasso", "DT", "RF", "SVM"])
+
+```
+
+
