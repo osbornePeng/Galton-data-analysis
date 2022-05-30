@@ -10,7 +10,7 @@ library(HistData)
 library(tidyverse)
 library(fastDummies)
 library(glmnet)
-source("~/R/EM_for_LMM.R")
+# source("~/R/EM_for_LMM.R")
 
 # Build the design matrix
 
